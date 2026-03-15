@@ -1,0 +1,396 @@
+# DAO Solver / Relayer for Trustless Cross-Chain Governance Execution
+
+## ⚙️ Overview
+
+The **Solver** (also called a **DAO Relayer**) is the automation layer
+that ensures cross-chain governance messages are executed reliably
+without manual intervention.
+
+Because EVM chains cannot trigger their own actions, the solver acts as
+the **execution agent** that calls `popMessage()` when a queued
+governance message becomes eligible.
+
+Eligibility is determined using an **expiry block mechanism**, ensuring
+governance execution remains deterministic and fully on-chain.
+
+Within the Nounish governance bridge architecture, the solver serves as
+the **intent executor**, progressing governance actions across chains
+once timing and execution conditions are met.
+
+This system enables **trustless cross-chain governance propagation**
+using Layer 0 messaging infrastructure and optional integration with the
+**Open Intents Framework (ERC-7683)**.
+
+------------------------------------------------------------------------
+
+# 1. Key Concepts
+
+## Layer 0 Messaging
+
+Layer 0 represents the base cross-chain messaging layer used to transmit
+governance payloads between chains.
+
+Examples include:
+
+-   LayerZero
+-   Axelar
+-   Hyperlane
+
+These protocols handle:
+
+-   Proof verification
+-   Cross-chain routing
+-   Message finality
+
+All verification logic occurs **on-chain**, minimizing trust
+assumptions.
+
+------------------------------------------------------------------------
+
+## Solver / DAO Relayer
+
+The solver is the automated executor responsible for triggering
+governance message relay.
+
+Responsibilities include:
+
+-   Monitoring governance intents
+-   Detecting expiry conditions
+-   Executing `popMessage()` on-chain
+-   Triggering cross-chain message transmission
+
+Solvers may operate as:
+
+1.  **DAO-run relayers**
+2.  **Permissionless solvers via Open Intents Framework**
+
+------------------------------------------------------------------------
+
+## Expiring Block Trigger
+
+Governance messages use an **expiry block delay** to control execution
+timing.
+
+``` solidity
+expiryBlock = block.number + durationBlocks
+```
+
+This mechanism:
+
+-   Prevents premature relay
+-   Ensures deterministic execution
+-   Aligns timing across chains
+-   Eliminates reliance on off-chain schedulers
+
+Execution condition:
+
+``` solidity
+if (block.number >= expiryBlock && !popped) {
+    popMessage(id);
+}
+```
+
+------------------------------------------------------------------------
+
+# 2. Core Responsibilities of the Solver
+
+### 1. Monitor Governance Intents
+
+The solver observes governance activity on the **GovernanceRoot**
+contract.
+
+It watches for:
+
+-   `MessageQueued`
+-   `IntentCreated`
+
+Each queued message contains:
+
+-   Message ID
+-   Encoded governance payload
+-   `expiryBlock`
+
+The solver maintains a queue of messages eligible for execution.
+
+------------------------------------------------------------------------
+
+### 2. Evaluate Execution Conditions
+
+Before executing a message, the solver verifies:
+
+-   `block.number >= expiryBlock`
+-   `popped == false`
+-   Governance execution requirements satisfied\
+    (quorum reached, proposal finalized)
+
+------------------------------------------------------------------------
+
+### 3. Execute the Pop
+
+Once conditions are satisfied, the solver calls:
+
+``` solidity
+PoppingContract.popMessage(id)
+```
+
+This transaction performs several actions:
+
+1.  Marks the message as popped (replay protection)
+2.  Sends the payload through the Layer 0 endpoint
+3.  Emits the following events:
+
+-   `MessagePopped`
+-   `IntentFulfilled`
+
+------------------------------------------------------------------------
+
+### 4. Claim Rewards (Optional)
+
+If integrated with the **Open Intents Framework**, solvers can receive
+incentives.
+
+Possible reward structures include:
+
+-   Gas reimbursement
+-   Execution fee embedded in the intent
+-   DAO treasury incentives
+
+------------------------------------------------------------------------
+
+# 3. Workflow
+
+## 1. Message Scheduling
+
+The governance root queues a cross-chain message.
+
+``` solidity
+queueMessage(payload, durationBlocks)
+```
+
+Stored message data includes:
+
+-   `payload`
+-   `expiryBlock`
+
+An event is emitted:
+
+``` solidity
+MessageQueued(id, expiryBlock, payload)
+```
+
+------------------------------------------------------------------------
+
+## 2. Solver Monitoring
+
+The solver monitors events on the origin chain.
+
+Once the expiry condition is satisfied:
+
+``` solidity
+block.number >= expiryBlock
+```
+
+The solver submits a transaction calling:
+
+``` solidity
+popMessage(id)
+```
+
+Execution can be performed by:
+
+-   DAO relayer
+-   Permissionless solver
+
+------------------------------------------------------------------------
+
+## 3. PoppingContract Execution
+
+The PoppingContract validates the execution.
+
+Steps performed:
+
+1.  Verify expiry condition
+2.  Mark message as popped
+3.  Forward payload to the Layer 0 endpoint
+
+Example:
+
+``` solidity
+Layer0Endpoint.sendMessage(destinationChain, payload)
+```
+
+------------------------------------------------------------------------
+
+## 4. Layer 0 Relay and Proof Transmission
+
+The Layer 0 protocol:
+
+1.  Generates proof metadata
+2.  Relays the message to the destination chain
+3.  Verifies proof on the destination endpoint
+
+This removes the need for centralized coordinators.
+
+------------------------------------------------------------------------
+
+## 5. BridgeReceiver Processing
+
+On the destination chain, the `BridgeReceiver` contract:
+
+1.  Receives the validated payload
+2.  Decodes governance data
+3.  Updates the mirror governance state
+
+Example event:
+
+``` solidity
+GovernanceUpdated(proposalId, passed)
+```
+
+This allows cross-chain DAOs to stay synchronized.
+
+------------------------------------------------------------------------
+
+## 6. Intent Lifecycle (OIF Integration)
+
+If integrated with **ERC-7683 Open Intents Framework**:
+
+1.  `IntentManager` creates an intent during message queueing
+2.  Solvers monitor the intent registry
+3.  Once executed, the intent is marked **Fulfilled**
+4.  Solver rewards are distributed
+
+This enables **permissionless execution markets**.
+
+------------------------------------------------------------------------
+
+# 4. Implementation Models
+
+## Model 1 --- DAO Relayer (Centralized Executor)
+
+The DAO directly operates the solver infrastructure.
+
+Characteristics:
+
+-   DAO multisig controls the relayer
+-   Messages executed by a trusted executor
+-   Gas paid by DAO treasury
+
+### Advantages
+
+-   Simple architecture
+-   Low operational complexity
+-   Predictable execution
+
+### Disadvantages
+
+-   Semi-centralized
+-   Potential bottleneck with many messages
+
+------------------------------------------------------------------------
+
+## Model 2 --- Permissionless Solver (Open Intents Framework)
+
+The system allows **any actor** to fulfill intents.
+
+The DAO defines:
+
+-   Reward structure
+-   Execution conditions
+-   Intent parameters
+
+### Execution Flow
+
+1.  GovernanceRoot queues a message
+2.  `IntentCreated` event emitted
+3.  Solvers detect eligible intents
+4.  Solver executes `popMessage(id)`
+5.  `IntentManager` validates fulfillment
+6.  Solver receives reward payout
+
+### Advantages
+
+-   Fully decentralized
+-   No single point of failure
+-   Market-driven execution efficiency
+
+### Disadvantages
+
+-   Requires solver ecosystem integration
+-   Incentive design must be tuned carefully
+
+------------------------------------------------------------------------
+
+# 5. Security Model
+
+  -------------------------------------------------------------------------
+  Component         Security Function           Trust Assumption
+  ----------------- --------------------------- ---------------------------
+  Solver / Relayer  Executes `popMessage()`     Permissionless execution
+
+  PoppingContract   Verifies expiry and         DAO-governed
+                    prevents replay             
+
+  Layer 0 Endpoint  Message routing and proof   Consensus-level trust
+                    validation                  
+
+  BridgeReceiver    Executes verified payload   Stateless deterministic
+                                                execution
+
+  IntentManager     Tracks intent fulfillment   ERC-7683 standard
+  -------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+
+# 6. Benefits of the Architecture
+
+-   Fully on-chain governance propagation
+-   Deterministic execution using block-based timing
+-   No off-chain schedulers
+-   No custodial bridges
+-   Permissionless solver infrastructure
+-   Compatible with existing DAO frameworks
+
+Examples:
+
+-   Governor Bravo
+-   Nouns DAO
+-   Compound Governor
+-   Modular DAO governance systems
+
+------------------------------------------------------------------------
+
+# 7. Example End-to-End Flow
+
+1.  DAO proposal finalizes on Chain A
+2.  GovernanceRoot calls:
+
+``` solidity
+queueMessage(payload, durationBlocks)
+```
+
+3.  Message becomes eligible after `expiryBlock`
+4.  Solver detects eligibility and executes:
+
+``` solidity
+popMessage(id)
+```
+
+5.  PoppingContract sends payload via Layer 0
+6.  Layer 0 relays proof to Chain B
+7.  `BridgeReceiver` executes governance update
+8.  `IntentManager` marks intent **Fulfilled**
+9.  Solver receives reward (if configured)
+
+------------------------------------------------------------------------
+
+# 8. Future Extensions
+
+Potential system improvements include:
+
+-   Multi-destination message propagation
+-   Cross-chain treasury governance
+-   Solver marketplaces for intent execution
+-   zk-proof-based message validation
+-   Retry and fallback logic for delayed messages
+-   Cross-chain governance batching
